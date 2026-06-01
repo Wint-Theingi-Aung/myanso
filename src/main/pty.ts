@@ -139,7 +139,13 @@ function createSession(wc: WebContents, cwd?: string): string {
   pty.onData((data) => {
     if (wc.isDestroyed()) return;
     s.buf += data;
-    if (s.ready) schedule(id, s);
+    if (!s.ready) {
+      if (s.buf.length > MAX_BUFFERED_CHARS) {
+        s.buf = s.buf.slice(-MAX_BUFFERED_CHARS);
+      }
+      return;
+    }
+    schedule(id, s);
   });
   pty.onExit(({ exitCode }) => {
     if (s.ready) flush(id, s);

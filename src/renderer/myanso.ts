@@ -1124,16 +1124,34 @@ class Tab {
     const target = branch.divider;
     target.setPointerCapture(e.pointerId);
 
+    let pendingRatio: number | null = null;
+    let dragFrame: number | null = null;
+    const applyPendingRatio = () => {
+      dragFrame = null;
+      if (pendingRatio == null) return;
+      branch.ratio = pendingRatio;
+      pendingRatio = null;
+      applyBranchSizing(branch);
+    };
+    const scheduleRatio = (ratio: number) => {
+      pendingRatio = ratio;
+      if (dragFrame != null) return;
+      dragFrame = requestAnimationFrame(applyPendingRatio);
+    };
     const onMove = (ev: PointerEvent) => {
       const cur = isRow ? ev.clientX : ev.clientY;
       const delta = (cur - startPos) / total;
       let r = startRatio + delta;
       if (r < minRatio) r = minRatio;
       if (r > maxRatio) r = maxRatio;
-      branch.ratio = r;
-      applyBranchSizing(branch);
+      scheduleRatio(r);
     };
     const onUp = (ev: PointerEvent) => {
+      if (dragFrame != null) {
+        cancelAnimationFrame(dragFrame);
+        dragFrame = null;
+      }
+      applyPendingRatio();
       target.releasePointerCapture(ev.pointerId);
       target.removeEventListener("pointermove", onMove);
       target.removeEventListener("pointerup", onUp);

@@ -198,6 +198,7 @@ class PaneSession {
   private lastResizeCols = 0;
   private lastResizeRows = 0;
   private lastCellH = 0;
+  private wheelAccum = 0;
   private ro: ResizeObserver | null = null;
   private disposers: Array<() => void> = [];
   private active = false;
@@ -227,6 +228,17 @@ class PaneSession {
       e.preventDefault();
       void window.pty?.showContextMenu({ canCopy: !!currentSelectionText() });
     });
+    // The .output mirror only paints the current viewport, and xterm's real
+    // scrollback lives in the hidden brain (pointer-events:none), so the
+    // wheel never reaches it. Drive scrolling ourselves: in the normal
+    // buffer, move xterm's viewport into scrollback and re-render; in alt
+    // screen (vim/less/man) there's no scrollback, so forward the wheel as
+    // arrow keys the app reads — matching iTerm/Ghostty.
+    this.outputDiv.addEventListener(
+      "wheel",
+      (e) => this.onWheel(e),
+      { passive: false },
+    );
 
     // lineHeight 1.25 → 20 px cell (integer, tiles cleanly, no row seams).
     // Tighter values (1.0 = 16 px) clip Burmese above-base marks like
@@ -437,6 +449,34 @@ class PaneSession {
 
   focus(): void {
     this.term.focus();
+  }
+
+  // Convert a wheel notch into an integer number of cell-rows, carrying the
+  // fractional remainder so trackpads (many small pixel deltas) accumulate
+  // smoothly instead of being rounded to zero each event.
+  private wheelLines(e: WheelEvent): number {
+    const cell = this.lastCellH || 20;
+    let px = e.deltaY;
+    if (e.deltaMode === 1)
+      px *= cell; // delta in lines
+    else if (e.deltaMode === 2) px *= cell * this.term.rows; // delta in pages
+    this.wheelAccum += px;
+    const lines = Math.trunc(this.wheelAccum / cell);
+    this.wheelAccum -= lines * cell;
+    return lines;
+  }
+
+  private onWheel(e: WheelEvent): void {
+    const lines = this.wheelLines(e);
+    if (lines === 0) return;
+    e.preventDefault();
+    if (this.usingAltScreen) {
+      const seq = lines < 0 ? "\x1b[A" : "\x1b[B";
+      window.pty?.write(this.ptyId, seq.repeat(Math.abs(lines)));
+      return;
+    }
+    this.term.scrollLines(lines); // negative = up into scrollback
+    this.scheduleRender();
   }
 
   writeToTerm(data: string): void {

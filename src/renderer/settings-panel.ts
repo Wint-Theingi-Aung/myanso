@@ -10,6 +10,8 @@ import {
   type AppearancePrefs,
 } from "./appearance";
 
+export type { ThemeId } from "./appearance";
+
 interface SettingsPanelOptions {
   initial: AppearancePrefs;
   platform: string | undefined;
@@ -229,7 +231,9 @@ export function initSettingsPanel(opts: SettingsPanelOptions): SettingsPanel {
     if (e.target === settingsModal) close();
   });
   settingsTheme.addEventListener("change", () => {
-    markDirty({ ...pending, theme: settingsTheme.value });
+    markDirty(
+      normalizeAppearance({ ...pending, theme: settingsTheme.value }),
+    );
   });
   settingsViewMode.addEventListener("change", () => {
     markDirty({

@@ -759,7 +759,7 @@ class PaneSession {
           flush();
           let cch = " ";
           if (c.getWidth() !== 0) cch = c.getChars() || " ";
-          const cursorClass = this.focused ? "cursor blink" : "cursor blurred";
+          const cursorClass = this.focused ? "cursor" : "cursor blurred";
           html += `<span class="${cursorClass}">${escapeHtml(cch)}</span>`;
           curFg = null;
           curBg = null;
@@ -803,7 +803,7 @@ class PaneSession {
       flush();
 
       if (isCursorLine && cursorX >= cols) {
-        const cursorClass = this.focused ? "cursor blink" : "cursor blurred";
+        const cursorClass = this.focused ? "cursor" : "cursor blurred";
         html += `<span class="${cursorClass}"> </span>`;
       }
 

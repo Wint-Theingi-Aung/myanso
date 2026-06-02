@@ -2219,12 +2219,17 @@ class TabManager {
     t.closeLeaf(t.active);
   }
 
-  // Inject text into the active pane as if typed. Used by file-drop to
-  // paste shell-escaped paths into the prompt.
+  // Inject a dropped file path into the active pane. Routed through
+  // term.paste() (not a raw write) so xterm wraps it in bracketed-paste
+  // markers when the app has DECSET 2004 on. Apps like Claude Code only
+  // treat an image path as an attachment when it arrives as a *paste*; a
+  // raw write looks like typed text and shows the literal path instead.
+  // With bracketed paste off (e.g. a bare shell prompt) term.paste sends
+  // the text unwrapped, so dropping a path still just inserts it.
   writeToActive(data: string): void {
     const t = this.active;
     if (!t) return;
-    window.pty?.write(t.active.session.ptyId, data);
+    t.active.session.term.paste(data);
     t.focusActive();
   }
 

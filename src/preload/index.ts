@@ -79,6 +79,9 @@ const api = {
   openPath(cwd: string | null, token: string): Promise<boolean> {
     return ipcRenderer.invoke("terminal:open-path", cwd, token);
   },
+  resolvePath(cwd: string | null, token: string): Promise<string | null> {
+    return ipcRenderer.invoke("terminal:resolve-path", cwd, token);
+  },
   onContextAction(cb: (action: TerminalContextAction) => void) {
     const listener = (
       _: Electron.IpcRendererEvent,

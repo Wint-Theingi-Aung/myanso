@@ -367,41 +367,94 @@ function currentSelectionText(): string {
 }
 
 // The whitespace-delimited token under a screen point \u2014 used for Cmd/Ctrl+
-// click "open file" (iTerm-style). Reconstructs the token from the whole row
-// so a path split across colored spans is still recovered intact.
-function tokenAtPoint(x: number, y: number): string | null {
-  const doc = document as Document & {
-    caretRangeFromPoint?: (cx: number, cy: number) => Range | null;
-  };
-  const range = doc.caretRangeFromPoint?.(x, y);
-  if (!range) return null;
+// click "open file" (iTerm-style). We can't trust caretRangeFromPoint here:
+// the hidden xterm terminal overlaps .output at a higher z-index, so the
+// caret can land on the wrong layer. Instead find the .output row via
+// elementsFromPoint (which skips the pointer-events:none xterm layer), then
+// locate the character by its real rendered rect \u2014 also correct for the
+// fractional advances of Myanmar glyphs.
+interface LinkHit {
+  token: string;
+  range: Range;
+}
+function linkAtPoint(
+  outputDiv: HTMLElement,
+  x: number,
+  y: number,
+): LinkHit | null {
   let row: HTMLElement | null = null;
-  for (let n: Node | null = range.startContainer; n; n = n.parentNode) {
-    if (n instanceof HTMLElement && n.classList.contains("line")) {
-      row = n;
+  for (const el of document.elementsFromPoint(x, y)) {
+    if (
+      el instanceof HTMLElement &&
+      el.classList.contains("line") &&
+      outputDiv.contains(el)
+    ) {
+      row = el;
       break;
     }
   }
   if (!row) return null;
+
   const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
   let full = "";
-  let caret = -1;
   for (let t = walker.nextNode(); t; t = walker.nextNode()) {
-    if (t === range.startContainer) caret = full.length + range.startOffset;
+    nodes.push(t as Text);
     full += (t as Text).data;
   }
-  if (caret < 0) return null;
-  full = full.replace(/\u00a0/g, " ");
+  if (!full) return null;
+
+  // Find the global char index whose rendered rect contains the point.
+  const probe = document.createRange();
+  let hit = -1;
+  let base = 0;
+  for (const node of nodes) {
+    const len = node.data.length;
+    for (let i = 0; i < len && hit < 0; i++) {
+      probe.setStart(node, i);
+      probe.setEnd(node, i + 1);
+      for (const rc of probe.getClientRects()) {
+        if (x >= rc.left && x <= rc.right && y >= rc.top && y <= rc.bottom) {
+          hit = base + i;
+          break;
+        }
+      }
+    }
+    if (hit >= 0) break;
+    base += len;
+  }
+  if (hit < 0) return null;
+
   const isSep = (c: string) => !c || /\s/.test(c);
-  let start = caret;
-  let end = caret;
+  let start = hit;
+  let end = hit + 1;
   while (start > 0 && !isSep(full[start - 1])) start--;
   while (end < full.length && !isSep(full[end])) end++;
-  return full.slice(start, end) || null;
+  const token = full.slice(start, end);
+  if (!token) return null;
+
+  // Build a Range spanning [start, end) across the row's text nodes.
+  const range = document.createRange();
+  let pos = 0;
+  let startSet = false;
+  for (const node of nodes) {
+    const len = node.data.length;
+    if (!startSet && start < pos + len) {
+      range.setStart(node, start - pos);
+      startSet = true;
+    }
+    if (startSet && end <= pos + len) {
+      range.setEnd(node, end - pos);
+      break;
+    }
+    pos += len;
+  }
+  return { token, range };
 }
 
 // ---- Find-in-terminal -------------------------------------------------
 const SEARCH_HIGHLIGHT = "search-current";
+const LINK_HIGHLIGHT = "link-hover";
 
 // One occurrence of the query: which buffer line, and the 0-based index of
 // the occurrence within that line's text (so two hits on one line stay
@@ -507,6 +560,12 @@ class PaneSession {
   private active = false;
   private usingAltScreen = false;
   private mouseEncoding: MouseEncoding = "default";
+  private linkHoverToken: string | null = null;
+  private linkHoverRange: Range | null = null;
+  private linkPendingToken: string | null = null;
+  private linkHoverScheduled = false;
+  private lastPointerX = 0;
+  private lastPointerY = 0;
 
   constructor(private readonly opts: PaneSessionOpts) {
     this.ptyId = opts.ptyId;
@@ -531,15 +590,29 @@ class PaneSession {
       const isMac = window.pty?.platform === "darwin";
       const openMod = isMac ? e.metaKey : e.ctrlKey;
       if (openMod && e.button === 0) {
-        const token = tokenAtPoint(e.clientX, e.clientY);
-        if (token) {
+        const hit = linkAtPoint(this.outputDiv, e.clientX, e.clientY);
+        if (hit) {
           e.preventDefault();
-          void window.pty?.openPath(this.cwdAbsolute(), token);
+          void window.pty?.openPath(this.cwdAbsolute(), hit.token);
           return;
         }
       }
       if (!currentSelectionText()) this.focus();
     });
+    // Cmd/Ctrl-hover affordance: underline the path under the pointer and show
+    // a pointer cursor, so it reads as clickable (iTerm-style).
+    this.outputDiv.addEventListener("mousemove", (e) => {
+      this.lastPointerX = e.clientX;
+      this.lastPointerY = e.clientY;
+      const isMac = window.pty?.platform === "darwin";
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) {
+        this.clearLinkHover();
+        return;
+      }
+      this.scheduleLinkHover();
+    });
+    this.outputDiv.addEventListener("mouseleave", () => this.clearLinkHover());
     this.outputDiv.addEventListener("contextmenu", (e) => {
       this.opts.onFocus(this);
       e.preventDefault();
@@ -671,10 +744,32 @@ class PaneSession {
     this.term.textarea?.addEventListener("focus", onFocus);
     this.term.textarea?.addEventListener("blur", onBlur);
     document.addEventListener("visibilitychange", onVisible);
+    // Show/hide the link affordance when the modifier is pressed/released
+    // without the mouse moving (e.g. holding Cmd while already hovering).
+    const onModKey = (e: KeyboardEvent) => {
+      if (e.key !== "Meta" && e.key !== "Control") return;
+      const isMac = window.pty?.platform === "darwin";
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) {
+        this.clearLinkHover();
+        return;
+      }
+      if (!this.active) return;
+      const r = this.outputDiv.getBoundingClientRect();
+      const x = this.lastPointerX;
+      const y = this.lastPointerY;
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        this.scheduleLinkHover();
+      }
+    };
+    document.addEventListener("keydown", onModKey);
+    document.addEventListener("keyup", onModKey);
     this.disposers.push(
       () => this.term.textarea?.removeEventListener("focus", onFocus),
       () => this.term.textarea?.removeEventListener("blur", onBlur),
       () => document.removeEventListener("visibilitychange", onVisible),
+      () => document.removeEventListener("keydown", onModKey),
+      () => document.removeEventListener("keyup", onModKey),
     );
 
     const renderDisposable = this.term.onRender((e) =>
@@ -782,6 +877,7 @@ class PaneSession {
   deactivate(): void {
     if (!this.active) return;
     this.active = false;
+    this.clearLinkHover();
     if (this.ro) {
       this.ro.disconnect();
       this.ro = null;
@@ -876,6 +972,59 @@ class PaneSession {
 
   clearSearchHighlight(): void {
     highlightRegistry()?.delete(SEARCH_HIGHLIGHT);
+  }
+
+  // ---- Cmd/Ctrl-hover link affordance --------------------------------
+  private scheduleLinkHover(): void {
+    if (this.linkHoverScheduled) return;
+    this.linkHoverScheduled = true;
+    requestAnimationFrame(() => {
+      this.linkHoverScheduled = false;
+      this.updateLinkHover();
+    });
+  }
+
+  private updateLinkHover(): void {
+    const x = this.lastPointerX;
+    const y = this.lastPointerY;
+    // Cheap exit: still hovering the already-underlined token.
+    if (this.linkHoverRange) {
+      const r = this.linkHoverRange.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return;
+    }
+    const hit = linkAtPoint(this.outputDiv, x, y);
+    if (!hit) {
+      this.clearLinkHover();
+      return;
+    }
+    if (hit.token === this.linkHoverToken || hit.token === this.linkPendingToken)
+      return;
+    // Drop any current underline while we confirm the new token exists.
+    this.clearLinkHover();
+    this.linkPendingToken = hit.token;
+    void window.pty?.resolvePath(this.cwdAbsolute(), hit.token).then((abs) => {
+      if (this.linkPendingToken !== hit.token) return; // pointer moved on
+      this.linkPendingToken = null;
+      if (abs) this.setLinkHover(hit.token, hit.range);
+    });
+  }
+
+  private setLinkHover(token: string, range: Range): void {
+    this.linkHoverToken = token;
+    this.linkHoverRange = range;
+    const reg = highlightRegistry();
+    const Ctor = highlightCtor();
+    if (reg && Ctor) reg.set(LINK_HIGHLIGHT, new Ctor(range));
+    this.outputDiv.style.cursor = "pointer";
+  }
+
+  private clearLinkHover(): void {
+    this.linkPendingToken = null;
+    if (!this.linkHoverToken && !this.linkHoverRange) return;
+    this.linkHoverToken = null;
+    this.linkHoverRange = null;
+    highlightRegistry()?.delete(LINK_HIGHLIGHT);
+    this.outputDiv.style.cursor = "";
   }
 
   // Convert a wheel notch into an integer number of cell-rows, carrying the

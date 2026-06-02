@@ -280,6 +280,14 @@ ipcMain.handle(
   },
 );
 
+// Resolve-only (no open) — drives the Cmd-hover underline so we only show
+// the affordance for tokens that actually exist on disk.
+ipcMain.handle(
+  "terminal:resolve-path",
+  (_event, cwd: string | null, token: string) =>
+    token ? resolveOpenTarget(cwd, token) : null,
+);
+
 ipcMain.handle("clipboard:read-text", () => clipboard.readText());
 
 ipcMain.handle("clipboard:write-text", (_event, text: string) => {

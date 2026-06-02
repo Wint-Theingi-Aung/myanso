@@ -28,6 +28,7 @@ declare global {
       writeClipboardText(text: string): Promise<void>;
       showContextMenu(opts: { canCopy: boolean }): Promise<void>;
       openPath(cwd: string | null, token: string): Promise<boolean>;
+      resolvePath(cwd: string | null, token: string): Promise<string | null>;
       onContextAction(cb: (action: TerminalContextAction) => void): () => void;
     };
   }

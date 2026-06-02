@@ -247,6 +247,10 @@
                 background-color: #ff9632;
                 color: #15171e;
             }
+            /* Cmd/Ctrl-hover affordance over a clickable file path. */
+            ::highlight(link-hover) {
+                text-decoration: underline;
+            }
 
             /* One .tab-root per tab, only the active tab's root is shown.
                It hosts a recursive pane tree: .split (flex container) and

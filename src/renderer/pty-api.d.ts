@@ -27,6 +27,7 @@ declare global {
       readClipboardText(): Promise<string>;
       writeClipboardText(text: string): Promise<void>;
       showContextMenu(opts: { canCopy: boolean }): Promise<void>;
+      openPath(cwd: string | null, token: string): Promise<boolean>;
       onContextAction(cb: (action: TerminalContextAction) => void): () => void;
     };
   }

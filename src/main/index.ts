@@ -5,10 +5,12 @@ import {
   nativeImage,
   ipcMain,
   clipboard,
+  shell,
 } from "electron";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { initPtyHost, killSessionsFor } from "./pty.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -164,6 +166,8 @@ function buildMenu(): void {
           : []),
         shellItem("Copy", isMac ? "Cmd+C" : "Ctrl+Shift+C", "copy"),
         shellItem("Paste", isMac ? "Cmd+V" : "Ctrl+Shift+V", "paste"),
+        { type: "separator" },
+        shellItem("Find...", isMac ? "Cmd+F" : "Ctrl+Shift+F", "find"),
       ],
     },
     {
@@ -241,6 +245,40 @@ ipcMain.handle("app:initial-cwd", () => {
   pendingCwd = null;
   return c;
 });
+
+// Resolve a Cmd/Ctrl-clicked terminal token to an existing file/dir path.
+// The token may be absolute, ~-relative, or relative to the pane's cwd, and
+// may carry an editor-style :line(:col) suffix or trailing punctuation —
+// try progressively trimmed variants and return the first that exists.
+function resolveOpenTarget(cwd: string | null, rawToken: string): string | null {
+  const base = cwd && cwd !== "~" ? cwd : homedir();
+  const variants = new Set<string>([rawToken]);
+  variants.add(rawToken.replace(/:\d+(:\d+)?$/, "")); // strip :line(:col)
+  for (const v of [...variants]) {
+    variants.add(v.replace(/^[([{'"]+/, "").replace(/[)\]},.;:'"]+$/, ""));
+  }
+  for (const v of variants) {
+    if (!v) continue;
+    let p = v;
+    if (p === "~") p = homedir();
+    else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));
+    const abs = isAbsolute(p) ? p : resolve(base, p);
+    if (existsSync(abs)) return abs;
+  }
+  return null;
+}
+
+ipcMain.handle(
+  "terminal:open-path",
+  async (_event, cwd: string | null, token: string) => {
+    if (!token) return false;
+    const target = resolveOpenTarget(cwd, token);
+    if (!target) return false;
+    // shell.openPath returns "" on success, or an error message.
+    const err = await shell.openPath(target);
+    return err === "";
+  },
+);
 
 ipcMain.handle("clipboard:read-text", () => clipboard.readText());
 

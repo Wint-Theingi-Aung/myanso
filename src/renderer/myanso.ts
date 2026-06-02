@@ -366,6 +366,40 @@ function currentSelectionText(): string {
   return sel.toString().replace(/\u00a0/g, " ");
 }
 
+// The whitespace-delimited token under a screen point \u2014 used for Cmd/Ctrl+
+// click "open file" (iTerm-style). Reconstructs the token from the whole row
+// so a path split across colored spans is still recovered intact.
+function tokenAtPoint(x: number, y: number): string | null {
+  const doc = document as Document & {
+    caretRangeFromPoint?: (cx: number, cy: number) => Range | null;
+  };
+  const range = doc.caretRangeFromPoint?.(x, y);
+  if (!range) return null;
+  let row: HTMLElement | null = null;
+  for (let n: Node | null = range.startContainer; n; n = n.parentNode) {
+    if (n instanceof HTMLElement && n.classList.contains("line")) {
+      row = n;
+      break;
+    }
+  }
+  if (!row) return null;
+  const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  let full = "";
+  let caret = -1;
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (t === range.startContainer) caret = full.length + range.startOffset;
+    full += (t as Text).data;
+  }
+  if (caret < 0) return null;
+  full = full.replace(/\u00a0/g, " ");
+  const isSep = (c: string) => !c || /\s/.test(c);
+  let start = caret;
+  let end = caret;
+  while (start > 0 && !isSep(full[start - 1])) start--;
+  while (end < full.length && !isSep(full[end])) end++;
+  return full.slice(start, end) || null;
+}
+
 // ---- Find-in-terminal -------------------------------------------------
 const SEARCH_HIGHLIGHT = "search-current";
 
@@ -490,7 +524,20 @@ class PaneSession {
     this.outputDiv.addEventListener("mousedown", (e) => {
       if (e.button === 0) this.opts.onFocus(this);
     });
-    this.outputDiv.addEventListener("click", () => {
+    this.outputDiv.addEventListener("click", (e) => {
+      // Cmd+Click (mac) / Ctrl+Click (win/lin) on a file path opens it in the
+      // default app, iTerm-style. The token is resolved against this pane's
+      // cwd in the main process, which also verifies it exists.
+      const isMac = window.pty?.platform === "darwin";
+      const openMod = isMac ? e.metaKey : e.ctrlKey;
+      if (openMod && e.button === 0) {
+        const token = tokenAtPoint(e.clientX, e.clientY);
+        if (token) {
+          e.preventDefault();
+          void window.pty?.openPath(this.cwdAbsolute(), token);
+          return;
+        }
+      }
       if (!currentSelectionText()) this.focus();
     });
     this.outputDiv.addEventListener("contextmenu", (e) => {
@@ -2104,7 +2151,7 @@ class TabManager {
     // Ctrl+Shift+T/W convention above.
     if (e.code === "KeyF" && !e.altKey && (isMac ? !e.shiftKey : e.shiftKey)) {
       e.preventDefault();
-      this.search.openWith(currentSelectionText() || undefined);
+      this.openFind();
       return false;
     }
 
@@ -2234,6 +2281,12 @@ class TabManager {
     if (!t) return;
     t.active.session.term.paste(data);
     t.focusActive();
+  }
+
+  // Open the find bar (Edit > Find, and the Cmd+F / Ctrl+Shift+F shortcut),
+  // prefilled with any current selection.
+  openFind(): void {
+    this.search.openWith(currentSelectionText() || undefined);
   }
 
   async copySelection(): Promise<boolean> {
@@ -2407,6 +2460,9 @@ window.pty?.onMenu((action) => {
       break;
     case "open-settings":
       settingsPanel.open();
+      break;
+    case "find":
+      tabs.openFind();
       break;
   }
 });

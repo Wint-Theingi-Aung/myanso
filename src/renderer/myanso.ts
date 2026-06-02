@@ -1780,8 +1780,9 @@ class TerminalSearch {
     }
     const isMac = window.pty?.platform === "darwin";
     const mod = isMac ? e.metaKey : e.ctrlKey;
-    if (mod && e.code === "KeyF") {
-      // Cmd/Ctrl+F while already open: re-select the query to retype fast.
+    // Find shortcut while already open: re-select the query to retype fast.
+    // Mac: Cmd+F; win/lin: Ctrl+Shift+F (matches the open shortcut).
+    if (mod && e.code === "KeyF" && (isMac || e.shiftKey)) {
       e.preventDefault();
       this.input.select();
       return;
@@ -2098,8 +2099,10 @@ class TabManager {
 
     if (this.handleClipboardShortcut(e)) return false;
 
-    // Cmd+F / Ctrl+F — open the find bar, prefilled with any selection.
-    if (e.code === "KeyF" && !e.altKey && !e.shiftKey) {
+    // Find: Cmd+F (mac) / Ctrl+Shift+F (win/lin). Shift is required off-mac
+    // so we don't clobber readline's Ctrl+F (forward-char), matching the
+    // Ctrl+Shift+T/W convention above.
+    if (e.code === "KeyF" && !e.altKey && (isMac ? !e.shiftKey : e.shiftKey)) {
       e.preventDefault();
       this.search.openWith(currentSelectionText() || undefined);
       return false;

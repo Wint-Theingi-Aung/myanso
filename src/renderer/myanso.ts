@@ -374,8 +374,9 @@ function currentSelectionText(): string {
 // locate the character by its real rendered rect \u2014 also correct for the
 // fractional advances of Myanmar glyphs.
 interface LinkHit {
-  token: string;
-  range: Range;
+  token: string; // full whitespace-delimited token, sent to the backend
+  start: number; // global char offset of the token within its row
+  row: HTMLElement; // the .line element, for rebuilding a trimmed Range later
 }
 function linkAtPoint(
   outputDiv: HTMLElement,
@@ -432,12 +433,21 @@ function linkAtPoint(
   while (end < full.length && !isSep(full[end])) end++;
   const token = full.slice(start, end);
   if (!token) return null;
+  return { token, start, row };
+}
 
-  // Build a Range spanning [start, end) across the row's text nodes.
+// Build a Range over the [start, end) global char offsets of a row's text.
+function rangeInRow(
+  row: HTMLElement,
+  start: number,
+  end: number,
+): Range | null {
+  const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
   let pos = 0;
   let startSet = false;
-  for (const node of nodes) {
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const node = n as Text;
     const len = node.data.length;
     if (!startSet && start < pos + len) {
       range.setStart(node, start - pos);
@@ -445,11 +455,11 @@ function linkAtPoint(
     }
     if (startSet && end <= pos + len) {
       range.setEnd(node, end - pos);
-      break;
+      return range;
     }
     pos += len;
   }
-  return { token, range };
+  return null;
 }
 
 // ---- Find-in-terminal -------------------------------------------------
@@ -564,6 +574,7 @@ class PaneSession {
   private linkHoverRange: Range | null = null;
   private linkPendingToken: string | null = null;
   private linkHoverScheduled = false;
+  private linkResolveTimer: number | null = null;
   private lastPointerX = 0;
   private lastPointerY = 0;
 
@@ -1002,10 +1013,29 @@ class PaneSession {
     // Drop any current underline while we confirm the new token exists.
     this.clearLinkHover();
     this.linkPendingToken = hit.token;
-    void window.pty?.resolvePath(this.cwdAbsolute(), hit.token).then((abs) => {
+    // Debounce the resolve: each resolvePath runs blocking existsSync probes in
+    // the main process, so wait for the pointer to settle on a token instead of
+    // firing one filesystem probe per token swept across.
+    this.linkResolveTimer = window.setTimeout(() => {
+      this.linkResolveTimer = null;
+      if (this.linkPendingToken !== hit.token) return; // pointer moved on
+      this.resolveLinkHover(hit);
+    }, 50);
+  }
+
+  private resolveLinkHover(hit: LinkHit): void {
+    void window.pty?.resolvePath(this.cwdAbsolute(), hit.token).then((matched) => {
       if (this.linkPendingToken !== hit.token) return; // pointer moved on
       this.linkPendingToken = null;
-      if (abs) this.setLinkHover(hit.token, hit.range);
+      if (!matched || !hit.row.isConnected) return; // row recycled mid-resolve
+      // The backend strips wrapping punctuation / :line suffixes; underline
+      // only the part that actually resolved, not the surrounding "( ),."
+      const off = hit.token.indexOf(matched);
+      const from = off >= 0 ? hit.start + off : hit.start;
+      const to =
+        off >= 0 ? from + matched.length : hit.start + hit.token.length;
+      const range = rangeInRow(hit.row, from, to);
+      if (range) this.setLinkHover(hit.token, range);
     });
   }
 
@@ -1019,6 +1049,10 @@ class PaneSession {
   }
 
   private clearLinkHover(): void {
+    if (this.linkResolveTimer !== null) {
+      clearTimeout(this.linkResolveTimer);
+      this.linkResolveTimer = null;
+    }
     this.linkPendingToken = null;
     if (!this.linkHoverToken && !this.linkHoverRange) return;
     this.linkHoverToken = null;

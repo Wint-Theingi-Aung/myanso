@@ -444,6 +444,9 @@
                 to { opacity: 0; }
             }
             .settings-panel {
+                /* Keep every control clickable even where the centered panel
+                   overlaps the 36px #chrome titlebar drag region above. */
+                -webkit-app-region: no-drag;
                 width: min(460px, calc(100vw - 32px));
                 background: linear-gradient(
                     180deg,

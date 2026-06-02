@@ -248,22 +248,32 @@ ipcMain.handle("app:initial-cwd", () => {
 
 // Resolve a Cmd/Ctrl-clicked terminal token to an existing file/dir path.
 // The token may be absolute, ~-relative, or relative to the pane's cwd, and
-// may carry an editor-style :line(:col) suffix or trailing punctuation —
-// try progressively trimmed variants and return the first that exists.
-function resolveOpenTarget(cwd: string | null, rawToken: string): string | null {
+// may carry an editor-style :line(:col) suffix or surrounding punctuation —
+// try progressively trimmed variants and return the first that exists, plus
+// the matched variant so the caller can underline only the real path (not
+// the trailing comma or wrapping parens).
+function resolveOpenTarget(
+  cwd: string | null,
+  rawToken: string,
+): { abs: string; token: string } | null {
   const base = cwd && cwd !== "~" ? cwd : homedir();
-  const variants = new Set<string>([rawToken]);
-  variants.add(rawToken.replace(/:\d+(:\d+)?$/, "")); // strip :line(:col)
-  for (const v of [...variants]) {
-    variants.add(v.replace(/^[([{'"]+/, "").replace(/[)\]},.;:'"]+$/, ""));
-  }
+  const variants = new Set<string>();
+  const add = (v: string) => {
+    if (v) variants.add(v);
+  };
+  add(rawToken);
+  // Strip wrapping/trailing punctuation, e.g. "(package.json)" or "main.ts,".
+  const trimmed = rawToken.replace(/^[([{'"]+/, "").replace(/[)\]},.;:'"]+$/, "");
+  add(trimmed);
+  // Strip an editor-style :line(:col) suffix, e.g. "src/main.ts:42".
+  add(trimmed.replace(/:\d+(:\d+)?$/, ""));
+  add(rawToken.replace(/:\d+(:\d+)?$/, ""));
   for (const v of variants) {
-    if (!v) continue;
     let p = v;
     if (p === "~") p = homedir();
     else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));
     const abs = isAbsolute(p) ? p : resolve(base, p);
-    if (existsSync(abs)) return abs;
+    if (existsSync(abs)) return { abs, token: v };
   }
   return null;
 }
@@ -275,17 +285,18 @@ ipcMain.handle(
     const target = resolveOpenTarget(cwd, token);
     if (!target) return false;
     // shell.openPath returns "" on success, or an error message.
-    const err = await shell.openPath(target);
+    const err = await shell.openPath(target.abs);
     return err === "";
   },
 );
 
-// Resolve-only (no open) — drives the Cmd-hover underline so we only show
-// the affordance for tokens that actually exist on disk.
+// Resolve-only (no open) — drives the Cmd-hover underline. Returns the matched
+// token form (the real path, punctuation stripped) so the front-end underlines
+// exactly that, or null when nothing on disk matches.
 ipcMain.handle(
   "terminal:resolve-path",
   (_event, cwd: string | null, token: string) =>
-    token ? resolveOpenTarget(cwd, token) : null,
+    token ? (resolveOpenTarget(cwd, token)?.token ?? null) : null,
 );
 
 ipcMain.handle("clipboard:read-text", () => clipboard.readText());

@@ -42,21 +42,46 @@ const MODE_ANSI16 = 16777216;
 const MODE_256 = 33554432;
 const MODE_RGB = 50331648;
 
+// RGB color values are absolute (theme-independent), so this cache never
+// needs invalidating. ANSI/256 already resolve via an array lookup. The
+// hot render loop calls this twice per styled cell (fg + bg); for
+// truecolor-heavy output (vim, syntax highlighting) the cache turns a
+// per-cell string allocation into a Map hit.
+const rgbColorCache = new Map<number, string>();
 function cssColor(color: number, mode: number): string | null {
   if (mode === 0) return null;
   if (mode === MODE_ANSI16 || mode === MODE_256) {
     return activeAnsiColors[color] ?? null;
   }
   if (mode === MODE_RGB) {
-    const r = (color >> 16) & 255;
-    const g = (color >> 8) & 255;
-    const b = color & 255;
-    return `rgb(${r},${g},${b})`;
+    let s = rgbColorCache.get(color);
+    if (s === undefined) {
+      const r = (color >> 16) & 255;
+      const g = (color >> 8) & 255;
+      const b = color & 255;
+      s = `rgb(${r},${g},${b})`;
+      rgbColorCache.set(color, s);
+    }
+    return s;
   }
   return null;
 }
 
+// Cached because dim runs re-derive the same faded color every cell. When
+// fg is null the result depends on the active theme foreground, so this is
+// cleared on theme change (see applyGlobalTheme). The empty-string key is
+// the null-fg sentinel (a real fg is never "").
+const dimColorCache = new Map<string, string>();
 function dimColor(fg: string | null): string {
+  const key = fg ?? "";
+  const cached = dimColorCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = computeDimColor(fg);
+  dimColorCache.set(key, result);
+  return result;
+}
+
+function computeDimColor(fg: string | null): string {
   const base = fg ?? activeTheme.foreground;
   const hex = base.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
   if (hex) {
@@ -160,6 +185,35 @@ function stylePartsForRun(
   return parts;
 }
 
+// The opening `<span ... style="...">` for a run depends only on the style
+// flags, not the text, so cache it keyed by those flags. Runs repeat the
+// same handful of style combos across a frame, so this avoids rebuilding
+// (and re-joining) the style string per run. Empty string means "no styling
+// — emit plain text". Cleared on theme change since dim runs embed a
+// theme-derived color (see applyGlobalTheme).
+const styledOpenTagCache = new Map<string, string>();
+function styledOpenTag(
+  fg: string | null,
+  bg: string | null,
+  bold: boolean,
+  italic: boolean,
+  dim: boolean,
+): string {
+  const key = `${fg ?? ""}|${bg ?? ""}|${bold ? 1 : 0}${italic ? 1 : 0}${dim ? 1 : 0}`;
+  let tag = styledOpenTagCache.get(key);
+  if (tag === undefined) {
+    const parts = stylePartsForRun(fg, bg, bold, italic, dim);
+    if (parts.length === 0) {
+      tag = "";
+    } else {
+      const classAttr = bg ? ' class="bg-run"' : "";
+      tag = `<span${classAttr} style="${parts.join(";")}">`;
+    }
+    styledOpenTagCache.set(key, tag);
+  }
+  return tag;
+}
+
 function wrapStyledText(
   text: string,
   fg: string | null,
@@ -169,10 +223,9 @@ function wrapStyledText(
   dim: boolean,
 ): string {
   if (!text) return "";
-  const parts = stylePartsForRun(fg, bg, bold, italic, dim);
-  if (parts.length === 0) return escapeHtml(text);
-  const classAttr = bg ? ' class="bg-run"' : "";
-  return `<span${classAttr} style="${parts.join(";")}">${escapeHtml(text)}</span>`;
+  const tag = styledOpenTag(fg, bg, bold, italic, dim);
+  if (tag === "") return escapeHtml(text);
+  return `${tag}${escapeHtml(text)}</span>`;
 }
 
 function wrapDrawableCell(
@@ -266,6 +319,10 @@ applyThemeVariables(activeTheme);
 function applyGlobalTheme(themeId: string): void {
   activeTheme = themeById(themeId);
   activeAnsiColors = ansi256Palette(activeTheme);
+  // Both caches can embed a theme-derived color (dim runs fall back to the
+  // theme foreground), so they're stale once the theme changes.
+  dimColorCache.clear();
+  styledOpenTagCache.clear();
   applyThemeVariables(activeTheme);
 }
 

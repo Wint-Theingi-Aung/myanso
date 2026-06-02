@@ -549,7 +549,12 @@ class PaneSession {
     }
     // Re-derive cols from the real rendered advance so the .output never
     // overflows. Keep the FitAddon's rows; only the column count is at risk.
-    const availW = this.outputDiv.getBoundingClientRect().width;
+    // getBoundingClientRect is the border box (full leaf width); subtract the
+    // .output horizontal padding so cols reflect the real content area.
+    const cs = getComputedStyle(this.outputDiv);
+    const padX =
+      parseFloat(cs.paddingLeft || "0") + parseFloat(cs.paddingRight || "0");
+    const availW = this.outputDiv.getBoundingClientRect().width - padX;
     const cellW = this.measuredCellWidth();
     if (availW > 0 && cellW > 0) {
       const realCols = Math.max(1, Math.floor(availW / cellW));

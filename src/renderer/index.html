@@ -269,6 +269,9 @@
                 opacity: 0;
                 z-index: 10;
                 pointer-events: none;
+                /* Keep in sync with .output padding so the brain (FitAddon
+                   measures this element) and the face derive the same grid. */
+                padding: 4px 8px;
             }
 
             /* THE FACE: HTML mirror of the brain's cell buffer, one per
@@ -284,6 +287,9 @@
                 pointer-events: auto;
                 cursor: text;
                 user-select: text;
+                /* Padding gives each pane breathing room from the divider and
+                   window edges. Keep in sync with .hidden-terminal padding. */
+                padding: 4px 8px;
             }
             .output::selection,
             .output *::selection {

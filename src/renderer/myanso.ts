@@ -366,6 +366,80 @@ function currentSelectionText(): string {
   return sel.toString().replace(/\u00a0/g, " ");
 }
 
+// ---- Find-in-terminal -------------------------------------------------
+const SEARCH_HIGHLIGHT = "search-current";
+
+// One occurrence of the query: which buffer line, and the 0-based index of
+// the occurrence within that line's text (so two hits on one line stay
+// distinct without tracking columns, which would be ambiguous for Myanmar).
+interface SearchMatch {
+  line: number;
+  occ: number;
+}
+
+// The CSS Custom Highlight API isn't in every lib.dom version; access it
+// through a narrow typed shim and feature-detect at the call site.
+interface HighlightRegistry {
+  set(name: string, highlight: object): void;
+  delete(name: string): void;
+}
+type HighlightCtor = new (...ranges: Range[]) => object;
+function highlightRegistry(): HighlightRegistry | null {
+  const reg = (CSS as unknown as { highlights?: HighlightRegistry }).highlights;
+  return reg ?? null;
+}
+function highlightCtor(): HighlightCtor | null {
+  return (
+    (globalThis as unknown as { Highlight?: HighlightCtor }).Highlight ?? null
+  );
+}
+
+// Build a DOM Range over the occ-th case-insensitive occurrence of `query`
+// in `root`'s text, walking text nodes so it works whether the row is a
+// single text node (plain fast path) or a tree of styled spans.
+function rangeForNthMatch(
+  root: HTMLElement,
+  query: string,
+  occ: number,
+): Range | null {
+  const needle = query.toLowerCase();
+  if (!needle) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let full = "";
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = n as Text;
+    nodes.push(t);
+    full += t.data;
+  }
+  const hay = full.toLowerCase();
+  let from = 0;
+  let found = -1;
+  for (let k = 0; k <= occ; k++) {
+    found = hay.indexOf(needle, from);
+    if (found < 0) return null;
+    from = found + needle.length;
+  }
+  const start = found;
+  const end = found + needle.length;
+  const range = document.createRange();
+  let pos = 0;
+  let startSet = false;
+  for (const node of nodes) {
+    const len = node.data.length;
+    if (!startSet && start < pos + len) {
+      range.setStart(node, start - pos);
+      startSet = true;
+    }
+    if (startSet && end <= pos + len) {
+      range.setEnd(node, end - pos);
+      return range;
+    }
+    pos += len;
+  }
+  return null;
+}
+
 class PaneSession {
   readonly ptyId: string;
   readonly leafEl: HTMLDivElement;
@@ -688,6 +762,73 @@ class PaneSession {
 
   focus(): void {
     this.term.focus();
+  }
+
+  // ---- Find-in-terminal ----------------------------------------------
+  // Scan the whole buffer (scrollback included) for case-insensitive hits.
+  searchScrollback(query: string): SearchMatch[] {
+    const out: SearchMatch[] = [];
+    if (!query) return out;
+    const needle = query.toLowerCase();
+    const buffer = this.term.buffer.active;
+    const total = buffer.length;
+    for (let i = 0; i < total; i++) {
+      const line = buffer.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString(true).toLowerCase();
+      if (!text) continue;
+      let from = 0;
+      let occ = 0;
+      for (;;) {
+        const idx = text.indexOf(needle, from);
+        if (idx < 0) break;
+        out.push({ line: i, occ });
+        occ++;
+        from = idx + needle.length;
+      }
+    }
+    return out;
+  }
+
+  // Scroll the match into view, repaint, then highlight it once the new rows
+  // have been painted into the .output mirror.
+  revealMatch(match: SearchMatch, query: string): void {
+    const rows = this.term.rows;
+    const top = this.term.buffer.active.viewportY;
+    if (match.line < top || match.line >= top + rows) {
+      this.term.scrollToLine(Math.max(0, match.line - Math.floor(rows / 2)));
+    }
+    this.scheduleRender(undefined, undefined, true);
+    requestAnimationFrame(() => this.applySearchHighlight(match, query));
+  }
+
+  private applySearchHighlight(
+    match: SearchMatch,
+    query: string,
+    retries = 3,
+  ): void {
+    this.clearSearchHighlight();
+    const startRow = this.term.buffer.active.viewportY;
+    const rowIndex = match.line - startRow;
+    if (rowIndex < 0 || rowIndex >= this.rowDivs.length) {
+      // The repaint may not have landed yet; give it a couple of frames.
+      if (retries > 0) {
+        requestAnimationFrame(() =>
+          this.applySearchHighlight(match, query, retries - 1),
+        );
+      }
+      return;
+    }
+    const range = rangeForNthMatch(this.rowDivs[rowIndex], query, match.occ);
+    if (!range) return;
+    const reg = highlightRegistry();
+    const Ctor = highlightCtor();
+    if (!reg || !Ctor) return;
+    reg.set(SEARCH_HIGHLIGHT, new Ctor(range));
+  }
+
+  clearSearchHighlight(): void {
+    highlightRegistry()?.delete(SEARCH_HIGHLIGHT);
   }
 
   // Convert a wheel notch into an integer number of cell-rows, carrying the
@@ -1546,6 +1687,163 @@ class Tab {
   }
 }
 
+// ---- Find bar --------------------------------------------------------
+// A single iTerm-style find bar that operates on whichever pane is active.
+// Enter steps to the previous (older) hit, Shift+Enter to the next (newer),
+// Esc closes and restores terminal focus.
+class TerminalSearch {
+  private readonly bar: HTMLDivElement;
+  private readonly input: HTMLInputElement;
+  private readonly count: HTMLSpanElement;
+  private matches: SearchMatch[] = [];
+  private index = -1;
+  private open = false;
+  private debounceTimer: number | null = null;
+
+  constructor(
+    container: HTMLElement,
+    private readonly getSession: () => PaneSession | null,
+    private readonly restoreFocus: () => void,
+  ) {
+    this.bar = document.createElement("div");
+    this.bar.className = "search-bar";
+    this.bar.hidden = true;
+
+    this.input = document.createElement("input");
+    this.input.type = "text";
+    this.input.className = "search-input";
+    this.input.placeholder = "Find";
+    this.input.spellcheck = false;
+
+    this.count = document.createElement("span");
+    this.count.className = "search-count";
+
+    const prev = this.button("↑", "Previous match", () => this.step(-1));
+    const next = this.button("↓", "Next match", () => this.step(1));
+    const close = this.button("✕", "Close (Esc)", () => this.close());
+
+    this.bar.append(this.input, this.count, prev, next, close);
+    container.appendChild(this.bar);
+
+    this.input.addEventListener("input", () => this.scheduleRecompute());
+    this.input.addEventListener("keydown", (e) => this.onInputKey(e));
+  }
+
+  private button(label: string, title: string, onClick: () => void) {
+    const b = document.createElement("button");
+    b.className = "search-btn";
+    b.textContent = label;
+    b.title = title;
+    // Keep input focus on click so the selection/highlight stays current.
+    b.addEventListener("mousedown", (e) => e.preventDefault());
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  isOpen(): boolean {
+    return this.open;
+  }
+
+  openWith(initial?: string): void {
+    this.open = true;
+    this.bar.hidden = false;
+    if (initial) this.input.value = initial;
+    this.input.focus();
+    this.input.select();
+    this.recompute();
+  }
+
+  close(): void {
+    if (!this.open) return;
+    this.open = false;
+    this.bar.hidden = true;
+    if (this.debounceTimer != null) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.getSession()?.clearSearchHighlight();
+    this.matches = [];
+    this.index = -1;
+    this.restoreFocus();
+  }
+
+  private onInputKey(e: KeyboardEvent): void {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      this.close();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      this.step(e.shiftKey ? 1 : -1);
+      return;
+    }
+    const isMac = window.pty?.platform === "darwin";
+    const mod = isMac ? e.metaKey : e.ctrlKey;
+    if (mod && e.code === "KeyF") {
+      // Cmd/Ctrl+F while already open: re-select the query to retype fast.
+      e.preventDefault();
+      this.input.select();
+      return;
+    }
+    // The app uses a custom menu without standard Edit roles, so native
+    // select-all isn't delivered to inputs — handle it here.
+    if (mod && e.code === "KeyA" && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      this.input.select();
+    }
+  }
+
+  private scheduleRecompute(): void {
+    if (this.debounceTimer != null) clearTimeout(this.debounceTimer);
+    this.debounceTimer = window.setTimeout(() => {
+      this.debounceTimer = null;
+      this.recompute();
+    }, 90);
+  }
+
+  private recompute(): void {
+    const session = this.getSession();
+    const query = this.input.value;
+    if (!session || !query) {
+      this.matches = [];
+      this.index = -1;
+      session?.clearSearchHighlight();
+      this.updateCount();
+      return;
+    }
+    this.matches = session.searchScrollback(query);
+    if (!this.matches.length) {
+      this.index = -1;
+      session.clearSearchHighlight();
+      this.updateCount();
+      return;
+    }
+    // Start at the newest (bottom-most) hit, like iTerm.
+    this.index = this.matches.length - 1;
+    session.revealMatch(this.matches[this.index], query);
+    this.updateCount();
+  }
+
+  private step(delta: number): void {
+    if (!this.matches.length) return;
+    const n = this.matches.length;
+    this.index = (this.index + delta + n) % n;
+    this.getSession()?.revealMatch(this.matches[this.index], this.input.value);
+    this.updateCount();
+  }
+
+  private updateCount(): void {
+    if (!this.input.value) {
+      this.count.textContent = "";
+    } else if (!this.matches.length) {
+      this.count.textContent = "0/0";
+    } else {
+      this.count.textContent = `${this.index + 1}/${this.matches.length}`;
+    }
+  }
+}
+
 // ---- TabManager ------------------------------------------------------
 
 class TabManager {
@@ -1554,8 +1852,17 @@ class TabManager {
   private tabsByPtyId = new Map<string, Tab>();
   private order: string[] = [];
   private activeId: string | null = null;
+  private readonly search: TerminalSearch;
 
   constructor() {
+    const wrapper =
+      document.getElementById("terminal-wrapper") ?? document.body;
+    this.search = new TerminalSearch(
+      wrapper,
+      () => this.active?.active.session ?? null,
+      () => this.active?.focusActive(),
+    );
+
     const pty = window.pty;
     if (!pty) return;
 
@@ -1690,6 +1997,9 @@ class TabManager {
     }
     const prev = this.active;
     prev?.deactivate();
+    // The find bar is scoped to the active pane; its highlight lives in the
+    // outgoing tab's DOM, so close it on switch.
+    if (this.search.isOpen()) this.search.close();
     this.activeId = id;
     tab.activate();
     document.title = tab.displayName();
@@ -1788,6 +2098,13 @@ class TabManager {
 
     if (this.handleClipboardShortcut(e)) return false;
 
+    // Cmd+F / Ctrl+F — open the find bar, prefilled with any selection.
+    if (e.code === "KeyF" && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      this.search.openWith(currentSelectionText() || undefined);
+      return false;
+    }
+
     // Cmd+Opt+Arrow / Ctrl+Alt+Arrow — pane navigation
     if (e.altKey && !e.shiftKey) {
       const dir =
@@ -1864,6 +2181,10 @@ class TabManager {
 
   private handleClipboardShortcut(e: KeyboardEvent): boolean {
     if (e.type !== "keydown") return false;
+    // Let the find bar's own input handle copy/paste/select natively.
+    const el = document.activeElement;
+    if (el instanceof HTMLInputElement && el.classList.contains("search-input"))
+      return false;
     const isMac = window.pty?.platform === "darwin";
     if (e.altKey) return false;
     const mod = isMac ? e.metaKey : e.ctrlKey;

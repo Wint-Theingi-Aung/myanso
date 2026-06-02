@@ -188,6 +188,66 @@
                 overflow: hidden;
             }
 
+            /* Find bar (Cmd/Ctrl+F), anchored to the top-right of the active
+               terminal area. Operates on the focused pane. */
+            .search-bar {
+                position: absolute;
+                top: 10px;
+                right: 18px;
+                z-index: 50;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 5px 7px;
+                background: var(--tab-bg-active);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+                font-size: 12px;
+            }
+            .search-bar[hidden] {
+                display: none;
+            }
+            .search-input {
+                background: var(--control-bg);
+                color: var(--fg);
+                border: 1px solid var(--border);
+                border-radius: 5px;
+                padding: 3px 8px;
+                width: 200px;
+                outline: none;
+                font: inherit;
+            }
+            .search-input:focus {
+                border-color: var(--accent);
+            }
+            .search-count {
+                color: var(--muted);
+                min-width: 40px;
+                text-align: center;
+                font-variant-numeric: tabular-nums;
+            }
+            .search-btn {
+                background: transparent;
+                border: none;
+                color: var(--muted);
+                cursor: pointer;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 14px;
+                line-height: 1;
+            }
+            .search-btn:hover {
+                background: var(--control-hover);
+                color: var(--fg);
+            }
+            /* Current search hit. Uses the CSS Custom Highlight API so the
+               Myanmar-critical render loop is never touched. */
+            ::highlight(search-current) {
+                background-color: #ff9632;
+                color: #15171e;
+            }
+
             /* One .tab-root per tab, only the active tab's root is shown.
                It hosts a recursive pane tree: .split (flex container) and
                .leaf (terminal pane), with .divider between siblings. */

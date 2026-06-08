@@ -4,7 +4,7 @@
   "version": "0.3.2",
   "description": "Myanso — a Myanmar-aware terminal.",
   "main": "main.js",
-  "author": "saturngod",
+  "author": "saturngod <saturngod@dev.com>",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
@@ -15,7 +15,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
-    "electron": "42.3.3",
+    "electron": "^42.3.3",
     "electron-builder": "^26.5.0"
   },
   "dependencies": {

@@ -1,13 +1,13 @@
 {
   "name": "myanso",
   "productName": "Myanso",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Myanso — a Myanmar-aware terminal.",
   "main": "main.js",
   "author": "saturngod <saturngod@dev.com>",
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
+    "start": "electron . --no-sandbox",
     "rebuild": "electron-rebuild -f -w node-pty",
     "patch-xterm": "node patches/patch-xterm-myanmar.js",
     "postinstall": "electron-rebuild -f -w node-pty && node patches/patch-xterm-myanmar.js",

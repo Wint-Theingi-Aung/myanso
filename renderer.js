@@ -29,7 +29,10 @@ const NORMAL_SCREEN_VERSION = IS_LINUX ? 'myan-std' : 'myan-shell';
 
 // A Myanmar-capable fallback list is always appended so the whole cluster is
 // shaped by one font instead of per-glyph fallbacks.
-const MYANMAR_FALLBACK = '"Noto Sans Myanmar", "Myanmar MN", "Myanmar Text", "Courier New", monospace';
+// Explicit monospace families must precede the Myanmar fonts: those fonts also
+// contain proportional Latin glyphs. A missing user-selected font on Ubuntu
+// would otherwise use proportional ASCII and break the terminal's cell grid.
+const MYANMAR_FALLBACK = '"Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "Courier New", "Noto Sans Myanmar", "Myanmar MN", "Myanmar Text", monospace';
 
 // --- Color helpers (used to derive panel UI tints from a few seed colors) ---
 function hexToRgb(hex) {

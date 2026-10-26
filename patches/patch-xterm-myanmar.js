@@ -15,7 +15,9 @@
  * so consecutive same-style cells collapse into a single span and the browser
  * shapes the whole cluster:  <span>မြန်မာ</span>
  *
- * Trade-off: width-compensation is disabled, so proportional/wide glyphs are
+ * Box drawing and block elements (U+2500–U+259F) retain width compensation
+ * so TUI graphics stay on the cell grid even with fallback fonts.
+ * Trade-off: other width-compensation is disabled, so proportional/wide glyphs are
  * no longer nudged onto the grid (column alignment can drift). That is the
  * intended trade — correct text over perfect monospace alignment.
  *
@@ -44,12 +46,14 @@ const targets = [
   {
     name: 'xterm.js',
     find: 'M=C*c-u.get(j,F.isBold(),F.isItalic())',
-    replace: 'M=this.defaultSpacing',
+    legacy: 'M=this.defaultSpacing',
+    replace: 'M=/[\\u2500-\\u259f]/.test(j)?C*c-u.get(j,F.isBold(),F.isItalic()):this.defaultSpacing',
   },
   {
     name: 'xterm.mjs',
     find: 'Ke=T*a-u.get(ze,x.isBold(),x.isItalic())',
-    replace: 'Ke=this.defaultSpacing',
+    legacy: 'Ke=this.defaultSpacing',
+    replace: 'Ke=/[\\u2500-\\u259f]/.test(ze)?T*a-u.get(ze,x.isBold(),x.isItalic()):this.defaultSpacing',
   },
   // 2) Keep a combining-mark cell in its base's span even when the cell's style
   //    differs (e.g. a TUI app draws an inverse-video cursor on a trailing mark
@@ -109,6 +113,12 @@ function applyPatch(baseDirectory = base, log = console.log) {
     }
     if (state.staged.includes(t.replace)) {
       statuses.push({ name: t.name, status: 'already patched' });
+      continue;
+    }
+    // Upgrade installations carrying the older unconditional spacing patch.
+    if (t.legacy && state.staged.includes(t.legacy)) {
+      state.staged = state.staged.replace(t.legacy, t.replace);
+      statuses.push({ name: t.name, status: 'upgraded ✔' });
       continue;
     }
     if (!state.staged.includes(t.find)) {

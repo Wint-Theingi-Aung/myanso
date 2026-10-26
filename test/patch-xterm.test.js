@@ -15,6 +15,7 @@ function fixture(t) {
     let src = fs.readFileSync(path.join(installed, name), 'utf8');
     for (const target of [...targets].reverse().filter((item) => item.name === name)) {
       src = src.replace(target.replace, target.find);
+      if (target.legacy) src = src.replace(target.legacy, target.find);
     }
     fs.writeFileSync(path.join(dir, name), src);
   }
@@ -33,6 +34,28 @@ test('fails when an expected file is missing', (t) => {
   const dir = fixture(t);
   fs.rmSync(path.join(dir, targets[0].name));
   assert.throws(() => applyPatch(dir, () => {}), /missing/);
+});
+
+test('upgrades the legacy spacing patch and keeps graphics width compensation', (t) => {
+  const dir = fixture(t);
+  for (const target of targets.filter((item) => item.legacy)) {
+    const p = path.join(dir, target.name);
+    fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace(target.find, target.legacy));
+  }
+  applyPatch(dir, () => {});
+  for (const target of targets.filter((item) => item.legacy)) {
+    assert.ok(fs.readFileSync(path.join(dir, target.name), 'utf8').includes(target.replace));
+  }
+  // Graphics retain their measured compensation; Myanmar still takes the
+  // default-spacing path so adjacent cells can shape together.
+  const target = targets[0];
+  const spacing = new Function('j', 'C', 'c', 'u', 'F', `let M; ${target.replace}; return M;`);
+  const attrs = { isBold: () => false, isItalic: () => false };
+  const ctx = { defaultSpacing: 0 };
+  for (const glyph of ['█', '▀', '▄', '│', '─']) {
+    assert.equal(spacing.call(ctx, glyph, 1, 10, { get: () => 8 }, attrs), 2);
+  }
+  assert.equal(spacing.call(ctx, 'မြ', 1, 10, { get: () => 8 }, attrs), 0);
 });
 
 test('validates all targets before writing any file', (t) => {

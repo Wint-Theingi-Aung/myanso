@@ -512,6 +512,7 @@ const FONTS = {
 // Line spacing presets. Each value is a multiplier of the font size (xterm's
 // lineHeight option). Bigger gives Myanmar stacked marks more vertical room.
 const SPACINGS = {
+  terminal: { name: 'Terminal / TUI (no extra spacing)', value: 1.0 },
   compact: { name: 'Compact', value: 1.2 },
   normal: { name: 'Normal', value: 22 / 14 },
   presentation: { name: 'Presentation', value: 2.0 }
